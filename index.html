@@ -260,10 +260,26 @@ nav.mainnav{display:flex;flex-direction:column;gap:2px;margin-top:6px;}
   #bottomnav{display:block;}
   #content{padding:16px 14px 90px 14px;}
 }
+
+body.auth-locked #shell, body.auth-locked #bottomnav { display:none !important; }
+body.auth-locked { overflow:hidden; }
 </style>
 </head>
-<body>
+<body class="auth-locked">
 
+<div id="login-screen" style="display:flex;position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;padding:20px;background:#101b2d;">
+  <form id="login-form" style="width:100%;max-width:390px;background:#fff;border-radius:16px;padding:30px;box-shadow:0 18px 55px rgba(0,0,0,.28);font-family:inherit;">
+    <div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Pânico Zer0</div>
+    <h1 style="margin:0 0 8px;color:#14233b;font-size:25px;">Acesso ao aplicativo</h1>
+    <p style="margin:0 0 22px;color:#64748b;font-size:14px;">Entre com seu e-mail e senha autorizados.</p>
+    <label for="login-email" style="display:block;font-size:13px;font-weight:700;color:#334155;margin:0 0 6px;">E-mail</label>
+    <input id="login-email" type="email" autocomplete="username" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:15px;font:inherit;">
+    <label for="login-password" style="display:block;font-size:13px;font-weight:700;color:#334155;margin:0 0 6px;">Senha</label>
+    <input id="login-password" type="password" autocomplete="current-password" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:16px;font:inherit;">
+    <div id="login-error" role="alert" style="display:none;color:#b91c1c;font-size:13px;margin-bottom:12px;"></div>
+    <button id="login-submit" type="submit" style="width:100%;padding:13px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:800;font-size:14px;cursor:pointer;">Entrar</button>
+  </form>
+</div>
 <div id="shell">
   <aside id="sidebar"></aside>
   <div id="main">
@@ -557,28 +573,100 @@ const QR = (function(){
   return {generate, toSvg};
 })();
 
-/* ---------- SUPABASE ---------- */
-const SUPA_URL  = 'https://norapizusjjofexumanr.supabase.co';
-const SUPA_KEY  = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5vcmFwaXp1c2pqb2ZleHVtYW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODk2NDQ3MjYsImV4cCI6MjEwNTIyMDcyNn0.2yEuL7wyro4B9Btw-e30SW0HNy5njkpHMmjRcN6pGMY';
-const SUPA_HDR  = {'Content-Type':'application/json','apikey':SUPA_KEY,'Authorization':'Bearer '+SUPA_KEY};
+/* ---------- SUPABASE + AUTENTICAÇÃO ---------- */
+const SUPA_URL = 'https://fpqxwdzcvmbcnvefgiyg.supabase.co';
+const SUPA_KEY = 'sb_publishable__rUxB5w7GiSTrpTkMLcjiw_cxg1BC4A';
+const AUTH_KEY = 'panico_zer0_auth_v1';
+let AUTH_SESSION = null;
+
+function readAuthSession(){
+  try{ const raw=localStorage.getItem(AUTH_KEY); return raw ? JSON.parse(raw) : null; }catch(e){ return null; }
+}
+function saveAuthSession(session){
+  AUTH_SESSION=session;
+  try{ if(session) localStorage.setItem(AUTH_KEY,JSON.stringify(session)); else localStorage.removeItem(AUTH_KEY); }catch(e){}
+}
+function authHeaders(token){
+  return {'Content-Type':'application/json','apikey':SUPA_KEY,'Authorization':'Bearer '+(token||SUPA_KEY)};
+}
+async function authRequest(path, body){
+  const r=await fetch(SUPA_URL+'/auth/v1/'+path,{method:'POST',headers:authHeaders(SUPA_KEY),body:JSON.stringify(body)});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.msg||data.message||data.error_description||data.error||'Não foi possível autenticar.');
+  return data;
+}
+async function loginWithPassword(email,password){
+  const data=await authRequest('token?grant_type=password',{email,password});
+  saveAuthSession({...data,expires_at:Math.floor(Date.now()/1000)+(data.expires_in||3600)});
+  return data;
+}
+async function refreshAuthSession(){
+  if(!AUTH_SESSION?.refresh_token) return false;
+  try{
+    const data=await authRequest('token?grant_type=refresh_token',{refresh_token:AUTH_SESSION.refresh_token});
+    saveAuthSession({...data,expires_at:Math.floor(Date.now()/1000)+(data.expires_in||3600)});
+    return true;
+  }catch(e){ saveAuthSession(null); return false; }
+}
+async function ensureAccessToken(){
+  if(!AUTH_SESSION?.access_token) throw new Error('Sessão encerrada. Entre novamente.');
+  if((AUTH_SESSION.expires_at||0) <= Math.floor(Date.now()/1000)+60){
+    const ok=await refreshAuthSession();
+    if(!ok) throw new Error('Sua sessão expirou. Entre novamente.');
+  }
+  return AUTH_SESSION.access_token;
+}
+async function logoutApp(){
+  try{
+    if(AUTH_SESSION?.access_token){
+      await fetch(SUPA_URL+'/auth/v1/logout',{method:'POST',headers:authHeaders(AUTH_SESSION.access_token)});
+    }
+  }catch(e){}
+  saveAuthSession(null);
+  document.body.classList.add('auth-locked');
+  document.getElementById('login-screen').style.display='flex';
+  document.getElementById('login-password').value='';
+  document.getElementById('login-email').focus();
+}
+function showLoginError(message){
+  const el=document.getElementById('login-error'); el.textContent=message; el.style.display='block';
+}
+function setLoginBusy(busy){
+  const btn=document.getElementById('login-submit'); btn.disabled=busy; btn.textContent=busy?'Entrando…':'Entrar'; btn.style.opacity=busy?'.7':'1';
+}
+document.getElementById('login-form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const email=document.getElementById('login-email').value.trim();
+  const password=document.getElementById('login-password').value;
+  document.getElementById('login-error').style.display='none'; setLoginBusy(true);
+  try{
+    await loginWithPassword(email,password);
+    await startAuthenticatedApp();
+  }catch(err){ showLoginError(err.message||'E-mail ou senha inválidos.'); }
+  finally{ setLoginBusy(false); }
+});
 
 async function supa(method, table, body, params){
-  let url = SUPA_URL+'/rest/v1/'+table;
-  if(params) url += '?'+params;
-  const opts = {method, headers:{...SUPA_HDR}};
-  if(body) opts.body = JSON.stringify(body);
-  if(method==='GET') opts.headers['Accept'] = 'application/json';
-  if(method==='POST') opts.headers['Prefer'] = 'return=minimal';
-  if(method==='PATCH') opts.headers['Prefer'] = 'return=minimal';
-  const r = await fetch(url, opts);
+  const token=await ensureAccessToken();
+  let url=SUPA_URL+'/rest/v1/'+table;
+  if(params) url+='?'+params;
+  const opts={method,headers:{...authHeaders(token)}};
+  if(body) opts.body=JSON.stringify(body);
+  if(method==='GET') opts.headers['Accept']='application/json';
+  if(method==='POST'||method==='PATCH') opts.headers['Prefer']='return=minimal';
+  let r=await fetch(url,opts);
+  if(r.status===401 && await refreshAuthSession()){
+    opts.headers={...authHeaders(AUTH_SESSION.access_token),...(method==='GET'?{'Accept':'application/json'}:{}),...((method==='POST'||method==='PATCH')?{'Prefer':'return=minimal'}:{})};
+    r=await fetch(url,opts);
+  }
   if(!r.ok){ const t=await r.text(); throw new Error(table+' '+method+': '+t); }
   if(method==='GET') return r.json();
   return true;
 }
-async function supaGet(table, params){ return supa('GET',table,null,params); }
-async function supaPost(table, body){ return supa('POST',table,body); }
-async function supaPatch(table, body, params){ return supa('PATCH',table,body,params); }
-async function supaDelete(table, params){ return supa('DELETE',table,null,params); }
+async function supaGet(table,params){ return supa('GET',table,null,params); }
+async function supaPost(table,body){ return supa('POST',table,body); }
+async function supaPatch(table,body,params){ return supa('PATCH',table,body,params); }
+async function supaDelete(table,params){ return supa('DELETE',table,null,params); }
 
 /* ---------- STORAGE (localStorage como cache + Supabase como fonte de verdade) ---------- */
 const DB_KEY = 'ext_app_v1';
@@ -1023,12 +1111,14 @@ function renderSidebar(){
     <div class="sidebar-foot">
       ${''/* aviso de storage removido — dados sincronizados via Supabase */}
       <button id="btn-open-backup" style="background:none;border:none;color:#A8BBDA;font-size:11px;text-decoration:underline;cursor:pointer;padding:0;font-weight:600;">Backup de dados</button>
+      <button id="btn-logout" style="display:block;margin-top:10px;background:none;border:1px solid rgba(255,255,255,.25);border-radius:6px;color:#fff;font-size:11px;padding:6px 9px;cursor:pointer;">Sair da conta</button>
       <div style="margin-top:6px;">SSMA · Gestão de equipamentos de combate a incêndio</div>
     </div>
   `;
   document.querySelectorAll('[data-nav]').forEach(b=> b.onclick=()=>nav(b.dataset.nav));
   const backupBtn = document.getElementById('btn-open-backup');
   if(backupBtn) backupBtn.onclick = openBackupModal;
+  const logoutBtn=document.getElementById('btn-logout'); if(logoutBtn) logoutBtn.onclick=logoutApp;
 
   document.getElementById('topbar').innerHTML = `
     <div style="display:flex;align-items:center;gap:9px;">
@@ -1039,10 +1129,12 @@ function renderSidebar(){
       ${''/* aviso storage removido */}
       ${pendenciasCount()>0 ? `<span class="nav-badge" style="position:static;">${pendenciasCount()} pendente${pendenciasCount()>1?'s':''}</span>`:''}
       <button id="btn-open-backup-mobile" style="background:none;border:1px solid rgba(255,255,255,.3);border-radius:6px;color:#fff;font-size:11px;padding:4px 8px;cursor:pointer;">Backup</button>
+      <button id="btn-logout-mobile" style="background:none;border:1px solid rgba(255,255,255,.3);border-radius:6px;color:#fff;font-size:11px;padding:4px 8px;cursor:pointer;">Sair</button>
     </div>
   `;
   const backupBtnMobile = document.getElementById('btn-open-backup-mobile');
   if(backupBtnMobile) backupBtnMobile.onclick = openBackupModal;
+  const logoutMobile=document.getElementById('btn-logout-mobile'); if(logoutMobile) logoutMobile.onclick=logoutApp;
 
   document.getElementById('bottomnav').innerHTML = `<div class="row">
     ${NAVITEMS.map(n=>`
@@ -2138,20 +2230,38 @@ function render(){
 }
 
 /* ---------- INIT ---------- */
-(function init(){
-  // Carrega cache local imediatamente (evita tela em branco)
-  ROUTE = parseHash(location.hash);
+async function startAuthenticatedApp(){
+  const token=await ensureAccessToken();
+  // Confirma a validade da sessão no Auth antes de liberar o conteúdo.
+  const check=await fetch(SUPA_URL+'/auth/v1/user',{headers:authHeaders(token)});
+  if(!check.ok){
+    if(await refreshAuthSession()){
+      const retry=await fetch(SUPA_URL+'/auth/v1/user',{headers:authHeaders(AUTH_SESSION.access_token)});
+      if(!retry.ok) throw new Error('Sessão inválida. Entre novamente.');
+    }else throw new Error('Sessão expirada. Entre novamente.');
+  }
+  document.body.classList.remove('auth-locked');
+  document.getElementById('login-screen').style.display='none';
+  ROUTE=parseHash(location.hash);
   render();
-  // Sincroniza com Supabase. Isso também permite que um QR Code
-  // escaneado em outro aparelho funcione mesmo sem cache local.
-  syncFromSupabase().then(ok=>{
-    if(ok){
-      const parsed = parseHash(location.hash);
-      ROUTE = parsed;
-      if(parsed._notFound) toast('Extintor "'+parsed._notFound+'" não encontrado. Verifique o cadastro.');
-      render();
-    }
-  });
+  const ok=await syncFromSupabase();
+  if(ok){
+    const parsed=parseHash(location.hash); ROUTE=parsed;
+    if(parsed._notFound) toast('Extintor "'+parsed._notFound+'" não encontrado. Verifique o cadastro.');
+    render();
+  }else{
+    toast('Não foi possível sincronizar com o Supabase. Verifique sua conexão e tente novamente.');
+  }
+}
+
+(async function init(){
+  AUTH_SESSION=readAuthSession();
+  if(AUTH_SESSION?.access_token){
+    try{ await startAuthenticatedApp(); return; }
+    catch(e){ console.warn('Sessão salva não pôde ser restaurada:',e); saveAuthSession(null); }
+  }
+  document.body.classList.add('auth-locked');
+  document.getElementById('login-screen').style.display='flex';
 })();
 </script>
 </body>
