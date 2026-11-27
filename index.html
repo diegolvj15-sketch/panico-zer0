@@ -278,6 +278,18 @@ body.auth-locked { overflow:hidden; }
     <input id="login-password" type="password" autocomplete="current-password" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:16px;font:inherit;">
     <div id="login-error" role="alert" style="display:none;color:#b91c1c;font-size:13px;margin-bottom:12px;"></div>
     <button id="login-submit" type="submit" style="width:100%;padding:13px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:800;font-size:14px;cursor:pointer;">Entrar</button>
+    <button id="forgot-password" type="button" style="display:block;width:100%;margin-top:14px;padding:8px;border:0;background:transparent;color:#1d4ed8;font-weight:700;cursor:pointer;">Esqueci minha senha</button>
+  </form>
+  <form id="reset-form" style="display:none;width:100%;max-width:390px;background:#fff;border-radius:16px;padding:30px;box-shadow:0 18px 55px rgba(0,0,0,.28);font-family:inherit;">
+    <div style="font-size:12px;font-weight:800;letter-spacing:1.5px;color:#64748b;text-transform:uppercase;margin-bottom:8px;">Pânico Zer0</div>
+    <h1 style="margin:0 0 8px;color:#14233b;font-size:25px;">Criar nova senha</h1>
+    <p style="margin:0 0 22px;color:#64748b;font-size:14px;">Digite e confirme sua nova senha de acesso.</p>
+    <label for="new-password" style="display:block;font-size:13px;font-weight:700;color:#334155;margin:0 0 6px;">Nova senha</label>
+    <input id="new-password" type="password" autocomplete="new-password" minlength="6" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:15px;font:inherit;">
+    <label for="confirm-password" style="display:block;font-size:13px;font-weight:700;color:#334155;margin:0 0 6px;">Confirmar nova senha</label>
+    <input id="confirm-password" type="password" autocomplete="new-password" minlength="6" required style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:16px;font:inherit;">
+    <div id="reset-error" role="alert" style="display:none;color:#b91c1c;font-size:13px;margin-bottom:12px;"></div>
+    <button id="reset-submit" type="submit" style="width:100%;padding:13px;border:0;border-radius:8px;background:#1d4ed8;color:white;font-weight:800;font-size:14px;cursor:pointer;">Salvar nova senha</button>
   </form>
 </div>
 <div id="shell">
@@ -644,6 +656,64 @@ document.getElementById('login-form').addEventListener('submit',async e=>{
     await startAuthenticatedApp();
   }catch(err){ showLoginError(err.message||'E-mail ou senha inválidos.'); }
   finally{ setLoginBusy(false); }
+});
+
+const APP_SITE_URL = 'https://diegolvj15-sketch.github.io/panico-zer0/';
+
+async function sendPasswordRecovery(email){
+  const redirect=encodeURIComponent(APP_SITE_URL);
+  const r=await fetch(SUPA_URL+'/auth/v1/recover?redirect_to='+redirect,{
+    method:'POST',headers:authHeaders(SUPA_KEY),body:JSON.stringify({email})
+  });
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.msg||data.message||data.error_description||data.error||'Não foi possível enviar o e-mail de recuperação.');
+}
+function showResetError(message){
+  const el=document.getElementById('reset-error');el.textContent=message;el.style.display='block';
+}
+function showPasswordReset(accessToken,refreshToken){
+  if(!accessToken) return false;
+  window.__PANICO_RECOVERY_TOKEN=accessToken;
+  window.__PANICO_RECOVERY_REFRESH=refreshToken||null;
+  document.getElementById('login-form').style.display='none';
+  document.getElementById('reset-form').style.display='block';
+  document.getElementById('login-screen').style.display='flex';
+  document.body.classList.add('auth-locked');
+  return true;
+}
+document.getElementById('forgot-password').addEventListener('click',async()=>{
+  const email=document.getElementById('login-email').value.trim();
+  if(!email){showLoginError('Digite seu e-mail para receber o link de recuperação.');return;}
+  const btn=document.getElementById('forgot-password');btn.disabled=true;btn.textContent='Enviando…';
+  try{
+    await sendPasswordRecovery(email);
+    showLoginError('Se o e-mail estiver cadastrado, enviaremos um link de recuperação. Verifique sua caixa de entrada e o spam.');
+    document.getElementById('login-error').style.color='#166534';
+  }catch(err){showLoginError(err.message||'Falha ao enviar o e-mail.');}
+  finally{btn.disabled=false;btn.textContent='Esqueci minha senha';}
+});
+document.getElementById('reset-form').addEventListener('submit',async e=>{
+  e.preventDefault();
+  const password=document.getElementById('new-password').value;
+  const confirm=document.getElementById('confirm-password').value;
+  const token=window.__PANICO_RECOVERY_TOKEN;
+  document.getElementById('reset-error').style.display='none';
+  if(password.length<6){showResetError('A senha deve ter pelo menos 6 caracteres.');return;}
+  if(password!==confirm){showResetError('As senhas não coincidem.');return;}
+  const btn=document.getElementById('reset-submit');btn.disabled=true;btn.textContent='Salvando…';
+  try{
+    const r=await fetch(SUPA_URL+'/auth/v1/user',{method:'PUT',headers:authHeaders(token),body:JSON.stringify({password})});
+    const data=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(data.msg||data.message||data.error_description||data.error||'Não foi possível atualizar a senha.');
+    window.__PANICO_RECOVERY_TOKEN=null;
+    if(window.history&&history.replaceState) history.replaceState(null,document.title,location.pathname+location.search);
+    document.getElementById('reset-form').style.display='none';
+    document.getElementById('login-form').style.display='block';
+    document.getElementById('login-password').value='';
+    document.getElementById('login-error').style.color='#166534';
+    showLoginError('Senha atualizada com sucesso! Agora entre com seu e-mail e a nova senha.');
+  }catch(err){showResetError(err.message||'Não foi possível atualizar a senha.');}
+  finally{btn.disabled=false;btn.textContent='Salvar nova senha';}
 });
 
 async function supa(method, table, body, params){
@@ -2255,6 +2325,13 @@ async function startAuthenticatedApp(){
 }
 
 (async function init(){
+  const hashParams=new URLSearchParams((location.hash||'').replace(/^#/ ,''));
+  const recoveryType=hashParams.get('type');
+  const recoveryToken=hashParams.get('access_token');
+  if(recoveryType==='recovery' && recoveryToken){
+    showPasswordReset(recoveryToken,hashParams.get('refresh_token'));
+    return;
+  }
   AUTH_SESSION=readAuthSession();
   if(AUTH_SESSION?.access_token){
     try{ await startAuthenticatedApp(); return; }
